@@ -122,9 +122,6 @@
         "利弊",
         "权衡",
         "最佳实践",
-        "审查",
-        "review",
-        "评审",
         "深度分析",
         "复杂",
         "难点",
@@ -136,7 +133,7 @@
     {
       "id": "review",
       "label": "代码审查",
-      "priority": 30,
+      "priority": 15,
       "target": "codex",
       "needsWrite": false,
       "model": "normal",
