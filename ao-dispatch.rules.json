@@ -62,14 +62,14 @@
   },
   "limits": {
     "_docs": {
-      "maxActiveSessions": "全局同时活跃会话数上限。调大会同时占用更多内存和 API 配额，超出后 ao-dispatch 会拒绝派活并提示先清理；当前 3。",
-      "maxPerAgent": "单个 harness 的并发上限。调大后同一个 agent 能同时承接更多任务；超出后 ao-dispatch 会直接拒绝派活（不是排队等），提示该 agent 已有 N 个活跃会话；当前 2。",
+      "maxActiveSessions": "全局同时活跃会话数上限。调大会同时占用更多内存和 API 配额，超出后 ao-dispatch 会拒绝派活并提示先清理；当前 10。",
+      "maxPerAgent": "单个 harness 的并发上限。调大后同一个 agent 能同时承接更多任务；超出后 ao-dispatch 会直接拒绝派活（不是排队等），提示该 agent 已有 N 个活跃会话；当前 5。必须和 maxActiveSessions 配套：当前只启用 deepseek-harness 和 codex 两个 harness，2 × 5 = 10 正好等于 maxActiveSessions；若仍留 2，则单 harness 先撞上限，全局 10 永远跑不满。",
       "maxOrchestrators": "编排器数量上限（每个项目一个），通常保持 1，调大容易出现多个编排器抢同一批任务；当前 1。",
       "keepLastTerminated": "保留多少个已终止会话记录，方便回查历史。调小会更快清理历史、省磁盘，但也更快丢掉排查线索；当前 3。",
-      "workerScaleUp": "以后要提高并发（上线更多 worker），必须同时把 maxActiveSessions 和 maxPerAgent 一起调大：只调 maxActiveSessions 的话，单个 agent 会先撞到 maxPerAgent 上限而派不出去（例如想跑 6 个并发，maxActiveSessions 要 ≥6 且 maxPerAgent 要 ≥ 单 agent 承担的数量）。另外注意 AO 侧的并发上限还有别处配置——ao-control.js 里有一套独立的 CONFIG（maxActiveSessions / maxOrchestrators / keepLastTerminated 写死在代码里，不读这个文件），两边数字不一致时它的规则检查会报违规；而且按本仓库约定 ao-control.js 不跟着改，调完这里的 limits 建议跑一次 node ~/.ao/tools/ao-control.js status 确认没有报违规，若有说明需要同步改那边的代码常量。"
+      "workerScaleUp": "以后要提高并发（上线更多 worker），必须同时把 maxActiveSessions 和 maxPerAgent 一起调大：只调 maxActiveSessions 的话，单个 agent 会先撞到 maxPerAgent 上限而派不出去（例如想跑 6 个并发，maxActiveSessions 要 ≥6 且 maxPerAgent 要 ≥ 单 agent 承担的数量）。另外注意 AO 侧的并发上限还有别处配置——ao-control.js 里有一套独立的 CONFIG（maxActiveSessions / maxOrchestrators / keepLastTerminated 写死在代码里，不读这个文件），两边数字不一致时它的规则检查会报违规。本次已把两边都改成 10（ao-dispatch.rules.json 的 limits.maxActiveSessions 与 ao-control.js 的 CONFIG.maxActiveSessions），以后调整务必两处同步：调完这里的 limits 建议跑一次 node ~/.ao/tools/ao-control.js status 确认没有报违规，若有说明需要同步改那边的代码常量。"
     },
-    "maxActiveSessions": 3,
-    "maxPerAgent": 2,
+    "maxActiveSessions": 10,
+    "maxPerAgent": 5,
     "maxOrchestrators": 1,
     "keepLastTerminated": 3
   },

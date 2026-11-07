@@ -38,7 +38,7 @@ const CONFIG = {
   aoBin: aoCfg.resolveAoBin(),
 
   // 管控阈值
-  maxActiveSessions: 3,          // 同时活跃会话上限
+  maxActiveSessions: 10,         // 同时活跃会话上限
   maxIdleMinutes: 30,            // idle 超过这么久视为可回收
   maxOrchestrators: 1,           // 每项目编排器上限
   autoDeleteTerminated: true,    // 自动删已终止会话记录
