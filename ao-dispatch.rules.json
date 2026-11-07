@@ -5,7 +5,13 @@
     "agent": "目标 agent。可用：deepseek-harness / codex（agy、mimo-code 已禁用）",
     "needsWrite": "是否要改文件。codex 不尊重 worktree，needsWrite=true 的任务会被拒绝派给 codex",
     "model": "模型档位（仅 deepseek-harness 有效）。cheap = workbuddy/deepseek-v4.1-flash-sg (x0.11)；normal = buddy/deepseek-v4-pro；strong = buddy/deepseek-v4-flash (x0.17)",
-    "priority": "数字越小越优先。同一任务命中多条规则时取 priority 最小的"
+    "priority": "数字越小越优先。同一任务命中多条规则时取 priority 最小的。数值相同则按规则在 rules 数组里的先后顺序（越靠前越优先）。改优先级就改这个数字，不用动代码。当前实际排序：image 10 → review 15 → hard 20 → investigate-deep 25 → investigate-simple 40 → docs 50 → test 60 → refactor 70 → code 80",
+    "keywords": "关键词匹配是【子串匹配】，不是全词匹配：规则关键词只要出现在任务描述里就算命中（例如关键词「修」会被「修复」「修改」命中，「测试」也会被「测试一下」命中）。匹配【不区分大小写】：任务描述和关键词都先转小写再比对，所以 README / readme / ReadMe 等价。匹配按 priority 从小到大逐条规则、逐条关键词进行，第一条命中即返回，后面的规则不再看。想收紧误判就把关键词写长、写具体；想放宽就写短。",
+    "keywordOverlap": "纪律：同一个关键词不要在两条规则里重复出现，否则 priority 数字小的那条会把另一条彻底吃掉。历史 bug 就是这样来的：hard 曾经含「审查 / review / 评审」，而 review 当时 priority 30、排在 hard（20）之后，于是「审查这个 PR」先命中 hard，review 规则永远不触发。修法是把 review 提到 15 并删掉 hard 里的重复词。以后新增或调整关键词前，先全局搜一遍这个文件，确认该词没在别的规则里出现过。",
+    "tierMeaning": "三档模型的实际用途建议：cheap 只用于读一读、轻量问答、解释类（成本最低，x0.11）；normal 用于写文件、改代码、跑测试等常规任务（默认档）；strong 用于需要更强推理的写文件任务（x0.17，比 normal 贵但比 cheap 强）。只读的强推理任务别占用 strong，直接 target 改成 codex 更划算。",
+    "whenToUseGpt": "想让任务用 gpt，正确做法是把规则的 target 改成 codex，而不是把 gpt 模型 id 填进 DSH 的 models——DSH 的 models 只认 provider jethub，填 gpt 会 provider 不存在直接失败，还会被 modelFallbackChain 当降级链一环，导致每次任务先失败一次再降级。前提：该规则的 needsWrite 必须是 false，因为 codex 不尊重 worktree，写文件任务会被拒绝派活。",
+    "howToAddRule": "新增一条规则的最小模板（复制到 rules 数组里，按 priority 插到对应位置）：{ \"id\": \"短英文标识，唯一，也是自动生成的会话名前缀\", \"label\": \"中文显示名\", \"priority\": \"数字，越小越优先，决定插在哪个区间\", \"target\": \"deepseek-harness 或 codex\", \"needsWrite\": \"true 或 false，true 只能配 deepseek-harness\", \"model\": \"cheap / normal / strong，仅 deepseek-harness 有意义，codex 只有 normal\", \"reason\": \"中文说明，rules 子命令会打印这行\", \"keywords\": [\"中文或英文关键词\"] }。priority 怎么插：比 image(10) 更靠前用个位数；审查类在 10~20 之间；困难/强推理只读在 20~40 之间；便宜只读调查在 40~50 之间；写文件类在 50~80 之间；比 code 更靠后就用 80 以上。注意别和已有规则的关键词重复（见 keywordOverlap）。",
+    "howToVerify": "改完规则后的验证步骤：1) 用 plan 子命令试几个典型输入，看命中的规则对不对，例如 node ~/.ao/tools/ao-dispatch.js plan \"审查这个 PR\"、plan \"定位这个问题的根本原因\"、plan \"帮我分析一下这个日志\"；2) 用 rules 子命令确认规则表读得出来、排序和 needsWrite 都对；3) 用 audit 子命令（可加 --days 7）看实际派活分布，确认没有某条规则被完全吃掉、或大量任务落到 default。"
   },
   "agents": {
     "deepseek-harness": {
@@ -55,6 +61,13 @@
     }
   },
   "limits": {
+    "_docs": {
+      "maxActiveSessions": "全局同时活跃会话数上限。调大会同时占用更多内存和 API 配额，超出后 ao-dispatch 会拒绝派活并提示先清理；当前 3。",
+      "maxPerAgent": "单个 harness 的并发上限。调大后同一个 agent 能同时承接更多任务；超出后 ao-dispatch 会直接拒绝派活（不是排队等），提示该 agent 已有 N 个活跃会话；当前 2。",
+      "maxOrchestrators": "编排器数量上限（每个项目一个），通常保持 1，调大容易出现多个编排器抢同一批任务；当前 1。",
+      "keepLastTerminated": "保留多少个已终止会话记录，方便回查历史。调小会更快清理历史、省磁盘，但也更快丢掉排查线索；当前 3。",
+      "workerScaleUp": "以后要提高并发（上线更多 worker），必须同时把 maxActiveSessions 和 maxPerAgent 一起调大：只调 maxActiveSessions 的话，单个 agent 会先撞到 maxPerAgent 上限而派不出去（例如想跑 6 个并发，maxActiveSessions 要 ≥6 且 maxPerAgent 要 ≥ 单 agent 承担的数量）。另外注意 AO 侧的并发上限还有别处配置——ao-control.js 里有一套独立的 CONFIG（maxActiveSessions / maxOrchestrators / keepLastTerminated 写死在代码里，不读这个文件），两边数字不一致时它的规则检查会报违规；而且按本仓库约定 ao-control.js 不跟着改，调完这里的 limits 建议跑一次 node ~/.ao/tools/ao-control.js status 确认没有报违规，若有说明需要同步改那边的代码常量。"
+    },
     "maxActiveSessions": 3,
     "maxPerAgent": 2,
     "maxOrchestrators": 1,
@@ -107,6 +120,7 @@
       "target": "codex",
       "needsWrite": false,
       "reason": "困难任务 → Codex（强推理）",
+      "_note": "这里【故意不含】审查类关键词（审查 / review / 评审）。history：hard 曾经含这些词，导致审查类任务在 priority 20 就被 hard 抢走，priority 30 的 review 永远不触发。所以想往这里加关键词之前，先检查 review 的关键词表，确认不重复；如果发现审查类任务又被别的规则抢走，把那条规则的 priority 数字调小（往 10 靠），不要往 hard 里加词。",
       "keywords": [
         "架构",
         "设计模式",
@@ -139,6 +153,7 @@
       "needsWrite": false,
       "model": "normal",
       "reason": "审查 → Codex（强推理，只读安全）",
+      "_note": "priority 15 是刻意排在 hard 的 20 之前的，为的是让审查类任务先命中 review。如果以后发现审查类任务被别的规则抢走，优先查是不是别的规则里又出现了「审查 / review / 评审」这类重复词（重复词按 keywordOverlap 的纪律处理）；确认不是重复词问题后，再把这里的 15 继续往下调（13、12…）。调完用 plan \"审查这个 PR\" 复验。",
       "keywords": [
         "审查",
         "review",
@@ -156,6 +171,7 @@
       "needsWrite": false,
       "model": "normal",
       "reason": "深度调查 → Codex（强推理，只读安全）",
+      "_note": "走 codex 用 gpt 强推理、只读（needsWrite=false 是硬前提，codex 不尊重 worktree）。如果发现普通分析类任务也被吸进来（说明这里的关键词太宽），两个改法：把关键词写窄/删掉几个，或者把 priority 数字调大（往 40 靠）让它排在 investigate-simple 之后。",
       "keywords": [
         "根因",
         "根本原因",
@@ -175,6 +191,7 @@
       "needsWrite": false,
       "model": "cheap",
       "reason": "简单调查 → DSH（便宜，只读）",
+      "_note": "走 DSH 的 cheap 档省钱（x0.11），只读不写文件。这里的关键词必须和 investigate-deep 保持不重复：两边一旦有同一个词，priority 小的那条（deep=25）会把 simple 完全吃掉，simple 永远不触发。改这里的关键词前先搜一遍 investigate-deep 的关键词表。",
       "keywords": [
         "分析",
         "调查",
