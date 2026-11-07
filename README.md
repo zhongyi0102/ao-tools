@@ -85,14 +85,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ~\.ao\tools\semantic-router\
 
 ```powershell
 git clone <本仓库> ~\.ao\tools
+cd ~\.ao\tools
 
-# 语义路由需要 Python 环境
-cd ~\.ao\tools\semantic-router
+# 1) MCP server 的 Node 依赖（不装则 ao-context MCP 起不来）
+cd context-mcp
+npm install
+cd ..
+
+# 2) 语义路由的 Python 环境（不装则只能走关键词层）
+cd semantic-router
 uv venv .venv --python 3.13
 uv pip install -r requirements.txt
 ```
 
-Node 侧无依赖，直接可跑。
+两个依赖都是可选的，但缺了会降级：
+
+| 缺什么 | 后果 |
+|---|---|
+| `context-mcp/node_modules` | ao-context MCP 启动失败（`MODULE_NOT_FOUND`） |
+| `semantic-router/.venv` | 只能关键词匹配，语义兜底不可用 |
+
+`ao-control.js` / `ao-dispatch.js` 本身零依赖，克隆下来直接能跑。
 
 ## 硬性约束
 
