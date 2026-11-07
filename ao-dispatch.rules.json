@@ -38,12 +38,12 @@
     "codex": {
       "enabled": true,
       "label": "Codex",
-      "respectsWorktree": false,
+      "respectsWorktree": true,
       "costTier": 3,
       "models": {
         "normal": "[\"magpie-responses\",\"agentrouter-plugin/gpt-5.6-sol\"]"
       },
-      "notes": "只用于只读的困难任务（强推理）。写文件任务一律排除。",
+      "notes": "强推理 + 可写文件。实测遵守 worktree（thread/start 的 cwd）。成本高，用于困难任务和 DSH 卡住的场景。",
       "steerWhileWorking": true,
       "steerNote": "Codex app-server 支持 steering，可在 turn 中途插话。"
     },
@@ -82,6 +82,30 @@
     "keepLastTerminated": 3
   },
   "rules": [
+    {
+      "id": "escalate",
+      "label": "升级给 Codex（DSH 卡住）",
+      "priority": 5,
+      "target": "codex",
+      "needsWrite": true,
+      "model": "normal",
+      "reason": "DSH 已尝试但卡住 → 升级给 Codex 接手",
+      "keywords": [
+        "dsh 做不了",
+        "dsh做不了",
+        "dsh 卡住",
+        "dsh卡住",
+        "dsh 失败",
+        "换个 agent",
+        "换 agent",
+        "升级给",
+        "接手",
+        "escalate",
+        "多次失败",
+        "反复失败",
+        "解决不了"
+      ]
+    },
     {
       "id": "image",
       "label": "带图片",
@@ -122,11 +146,61 @@
       ]
     },
     {
+      "id": "plan-first",
+      "label": "复杂任务（先 Codex 出方案，DSH 执行）",
+      "priority": 15,
+      "target": "codex",
+      "needsWrite": false,
+      "handoff": "deepseek-harness",
+      "model": "normal",
+      "reason": "复杂任务 → Codex 先出方案，DSH 按方案动手",
+      "keywords": [
+        "架构",
+        "设计模式",
+        "整体重构",
+        "整个项目",
+        "系统性",
+        "方案",
+        "选型",
+        "权衡",
+        "利弊",
+        "最佳实践",
+        "并发",
+        "死锁",
+        "竞态",
+        "内存泄漏",
+        "性能调优",
+        "性能优化",
+        "算法",
+        "复杂",
+        "难点",
+        "深度分析"
+      ]
+    },
+    {
+      "id": "review",
+      "label": "代码审查",
+      "priority": 18,
+      "target": "codex",
+      "needsWrite": false,
+      "model": "normal",
+      "reason": "审查 → Codex（强推理，只读安全）",
+      "_note": "priority 15 是刻意排在 hard 的 20 之前的，为的是让审查类任务先命中 review。如果以后发现审查类任务被别的规则抢走，优先查是不是别的规则里又出现了「审查 / review / 评审」这类重复词（重复词按 keywordOverlap 的纪律处理）；确认不是重复词问题后，再把这里的 15 继续往下调（13、12…）。调完用 plan \"审查这个 PR\" 复验。",
+      "keywords": [
+        "审查",
+        "review",
+        "评审",
+        "检查代码",
+        "评估质量",
+        "找问题"
+      ]
+    },
+    {
       "id": "hard",
       "label": "困难任务",
       "priority": 20,
       "target": "codex",
-      "needsWrite": false,
+      "needsWrite": true,
       "reason": "困难任务 → Codex（强推理）",
       "_note": "这里【故意不含】审查类关键词（审查 / review / 评审）。history：hard 曾经含这些词，导致审查类任务在 priority 20 就被 hard 抢走，priority 30 的 review 永远不触发。所以想往这里加关键词之前，先检查 review 的关键词表，确认不重复；如果发现审查类任务又被别的规则抢走，把那条规则的 priority 数字调小（往 10 靠），不要往 hard 里加词。",
       "keywords": [
@@ -151,24 +225,6 @@
         "最佳实践",
         "复杂",
         "难点"
-      ]
-    },
-    {
-      "id": "review",
-      "label": "代码审查",
-      "priority": 15,
-      "target": "codex",
-      "needsWrite": false,
-      "model": "normal",
-      "reason": "审查 → Codex（强推理，只读安全）",
-      "_note": "priority 15 是刻意排在 hard 的 20 之前的，为的是让审查类任务先命中 review。如果以后发现审查类任务被别的规则抢走，优先查是不是别的规则里又出现了「审查 / review / 评审」这类重复词（重复词按 keywordOverlap 的纪律处理）；确认不是重复词问题后，再把这里的 15 继续往下调（13、12…）。调完用 plan \"审查这个 PR\" 复验。",
-      "keywords": [
-        "审查",
-        "review",
-        "评审",
-        "检查代码",
-        "评估质量",
-        "找问题"
       ]
     },
     {

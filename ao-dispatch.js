@@ -403,7 +403,8 @@ async function decide(prompt) {
   if (!ready.installed) return fail(`${agent.label}：未安装`);
   if (/needs auth/i.test(ready.auth)) return fail(`${agent.label}：需要授权`);
 
-  // Codex 不尊重 worktree → 只允许只读
+  // worktree 隔离检查（Codex 已实测遵守 worktree，但仍保留这道防线：
+  // 若某 agent 的 respectsWorktree=false，则禁止它写文件）
   if (!agent.respectsWorktree && rule.needsWrite) {
     return fail(
       `${agent.label} 不尊重 worktree，但规则 ${rule.id} 要求写文件。\n` +
@@ -431,6 +432,19 @@ async function decide(prompt) {
   trace.push(`就绪：${agent.label}（load=${load}/${maxPerAgent}）`);
   trace.push(`模型：${model || '(默认)'}`);
 
+  // 两阶段协作：rule.handoff 存在时，先让 target 出方案，再交给 handoff 执行
+  let handoff = null;
+  if (rule.handoff) {
+    const ho = R.agents[rule.handoff];
+    if (ho && ho.enabled !== false) {
+      handoff = { harness: rule.handoff, agent: ho };
+      trace.push('');
+      trace.push(`两阶段协作：${agent.label} 出方案 → ${ho.label} 执行`);
+    } else {
+      trace.push(`  ⚠️  handoff 目标 ${rule.handoff} 不可用，退化为单阶段`);
+    }
+  }
+
   return {
     ok: true,
     trace,
@@ -441,6 +455,7 @@ async function decide(prompt) {
     harness: rule.target,
     model,
     needsWrite: rule.needsWrite,
+    handoff,
     activeCount: active.length,
     maxActive,
   };
@@ -489,6 +504,9 @@ function printPlan(plan) {
   console.log(`  harness   : ${plan.harness}`);
   console.log(`  model     : ${plan.model || '(默认)'}`);
   console.log(`  决策层    : ${plan.layer}`);
+  if (plan.handoff) {
+    console.log(`  两阶段    : ${plan.agent.label} 出方案 → ${plan.handoff.agent.label} 执行`);
+  }
   console.log(`  活跃会话  : ${plan.activeCount}/${plan.maxActive}`);
   console.log('');
 }
@@ -636,11 +654,23 @@ async function run(prompt, opts) {
       console.log('  饱和降级链：');
       chain.forEach((c, i) => console.log(`    ${i + 2}. ${c.model} (${c.tier})`));
     }
+    if (plan.handoff) {
+      console.log('');
+      console.log('  两阶段流程（--wait 时才会执行第二阶段）：');
+      console.log(`    1. ${plan.agent.label} 产出方案（只读）`);
+      console.log(`    2. ${plan.handoff.agent.label} 按方案改文件`);
+    }
     audit({ ok: null });            // dry-run：未真正派活
     return 0;
   }
 
   console.log('  派活中…');
+
+  // 两阶段：先让 Codex 出方案，再交给 DSH 执行
+  if (plan.handoff) {
+    return await runTwoStage(prompt, plan, opts);
+  }
+
   const r = await spawnWithFallback(prompt, plan, opts);
   if (!r.ok) {
     console.log('');
@@ -651,6 +681,97 @@ async function run(prompt, opts) {
   console.log(`  ${r.out}`);
   audit({ ok: true, model: r.usedModel ?? plan.model ?? null });
   return 0;
+}
+
+// ── 两阶段协作：出方案 → 执行 ───────────────────────────────
+async function runTwoStage(prompt, plan, opts) {
+  const name = opts.name || autoName(plan.rule);
+
+  // 阶段 1：让 plan.harness（Codex）出方案，明确要求只读
+  const planPrompt =
+    `【只出方案，不要改任何文件】\n\n` +
+    `任务：${prompt}\n\n` +
+    `请给出：\n` +
+    `1. 要改哪些文件、每处怎么改（具体到函数/行）\n` +
+    `2. 改动顺序与依赖\n` +
+    `3. 风险点与验证方法\n\n` +
+    `只输出方案，不要动手。`;
+
+  console.log(`  [阶段 1/2] ${plan.agent.label} 出方案…`);
+  const r1 = await spawnWithFallback(planPrompt, plan, { ...opts, name: `${name}-plan` });
+  if (!r1.ok) {
+    console.log(`  ❌ 阶段 1 失败：${r1.err}`);
+    return 1;
+  }
+  console.log(`  ✅ ${r1.out}`);
+
+  // 提取 session id
+  const m = r1.out.match(/session\s+(\S+)\s+"/) || r1.out.match(/(cloverstart-\d+)/);
+  const planSession = m ? m[1] : null;
+  console.log(`     方案会话：${planSession || '(未识别)'}`);
+
+  if (!opts.wait) {
+    console.log('');
+    console.log('  ⏸  阶段 1 已派出，等它跑完再执行阶段 2。');
+    console.log(`     看方案：ao session history ${planSession || '<会话id>'}`);
+    console.log(`     执行：node ao-dispatch.js run --handoff ${planSession || '<会话id>'} "原任务"`);
+    return 0;
+  }
+
+  // --wait：阻塞等阶段 1 完成，再自动进阶段 2
+  console.log('     等待方案完成…');
+  const planText = await waitForSessionDone(planSession, opts.waitTimeoutMs || 300000);
+  if (!planText) {
+    console.log('  ❌ 阶段 1 超时或失败，不进入阶段 2');
+    return 1;
+  }
+
+  // 阶段 2：把方案交给 DSH 执行
+  const execPrompt =
+    `【按方案执行】\n\n` +
+    `原任务：${prompt}\n\n` +
+    `上游给出的方案：\n${planText}\n\n` +
+    `请严格按上面的方案改文件。如果发现方案有问题，先说明再调整。`;
+
+  console.log('');
+  console.log(`  [阶段 2/2] ${plan.handoff.agent.label} 执行…`);
+  const execPlan = {
+    ...plan,
+    harness: plan.handoff.harness,
+    agent: plan.handoff.agent,
+    model: plan.handoff.agent.models?.normal || null,
+    handoff: null,
+  };
+  const r2 = await spawnWithFallback(execPrompt, execPlan, { ...opts, name: `${name}-exec` });
+  if (!r2.ok) {
+    console.log(`  ❌ 阶段 2 失败：${r2.err}`);
+    return 1;
+  }
+  console.log(`  ✅ ${r2.out}`);
+  return 0;
+}
+
+// ── 等会话完成并返回最终回复 ────────────────────────────────
+async function waitForSessionDone(sessionId, timeoutMs) {
+  if (!sessionId) return null;
+  const deadline = Date.now() + timeoutMs;
+  let lastLen = 0;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 5000));
+    const g = ao(['session', 'get', sessionId]);
+    if (!g.ok) continue;
+    const st = (g.out.match(/^status:\s*(.*)$/m) || [])[1]?.trim();
+    const act = (g.out.match(/^activity:\s*(.*)$/m) || [])[1]?.trim();
+    if (st === 'idle' || act === 'idle') {
+      const h = ao(['session', 'history', sessionId, '--limit', '1']);
+      if (h.ok && h.out.length > lastLen) {
+        // 取最后一条 assistant 内容
+        const idx = h.out.lastIndexOf('Assistant:');
+        return idx >= 0 ? h.out.slice(idx + 10).trim() : h.out.trim();
+      }
+    }
+  }
+  return null;
 }
 
 function autoName(rule) {
