@@ -15,3 +15,8 @@ context-mcp/node_modules/
 
 # 运行日志
 *.log
+
+# WAL 审计日志（默认写到 ~/.ao/logs/dispatch/，这里兜住仓库内同名路径）
+logs/
+**/logs/
+decisions-*.jsonl

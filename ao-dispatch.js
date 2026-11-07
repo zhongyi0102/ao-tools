@@ -16,12 +16,14 @@
  *   node tools/ao-dispatch.js run --dry-run "..."      只看会跑什么命令
  *   node tools/ao-dispatch.js rules                    打印规则表
  *   node tools/ao-dispatch.js rules --json             规则原文
+ *   node tools/ao-dispatch.js audit [--days N] [--json] 审计统计
  */
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const aoCfg = require('./ao-config');
 
 // ── 配置 ────────────────────────────────────────────────────
@@ -34,7 +36,56 @@ const CFG = {
   project: aoCfg.resolveProject(),
   aoBin: aoCfg.resolveAoBin(),
   rulesPath: path.join(__dirname, 'ao-dispatch.rules.json'),
+  auditDir: path.join(os.homedir(), '.ao', 'logs', 'dispatch'),
 };
+
+// ── WAL 审计日志 ────────────────────────────────────────────
+//
+// 每次路由决策落一行 JSON（按天分文件），用于事后统计与规则调优。
+// 只记 prompt 的 sha256 前 16 位与长度，不存原文 —— 避免日志膨胀与隐私问题。
+//
+// 铁律：日志失败绝不影响主流程。全部 try/catch 吞掉，只 warn 一次。
+let auditWarned = false;
+
+function auditPath(date = new Date()) {
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return path.join(CFG.auditDir, `decisions-${day}.jsonl`);
+}
+
+/** 提示词指纹：sha256 前 16 位。 */
+function promptHash(prompt) {
+  return crypto.createHash('sha256').update(String(prompt), 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * 追加一条决策记录。永不抛异常。
+ * @param {object} rec 至少含 prompt / layer / ruleId / harness / model / needsWrite / ok / reason
+ */
+function auditLog(rec) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      promptHash: promptHash(rec.prompt ?? ''),
+      promptLen: String(rec.prompt ?? '').length,
+      layer: rec.layer ?? null,
+      ruleId: rec.ruleId ?? null,
+      harness: rec.harness ?? null,
+      model: rec.model ?? null,
+      needsWrite: rec.needsWrite ?? null,
+      ok: rec.ok === undefined ? null : rec.ok,
+      reason: rec.reason ?? null,
+    });
+    fs.mkdirSync(CFG.auditDir, { recursive: true });
+    fs.appendFileSync(auditPath(), line + '\n', 'utf8');
+  } catch (e) {
+    if (!auditWarned) {
+      auditWarned = true;
+      try {
+        console.warn(`⚠️  审计日志写入失败（不影响派活）：${e.message}`);
+      } catch { /* 连 warn 都失败就彻底放弃 */ }
+    }
+  }
+}
 
 // ── 规则加载 ────────────────────────────────────────────────
 let RULES = null;
@@ -268,6 +319,10 @@ async function matchBySemantic(prompt) {
 }
 
 // ── 决策 ────────────────────────────────────────────────────
+//
+// decide() 内部只做决策；decideWithAudit() 在外面补一条 WAL 记录。
+// 分开写是因为 decide() 有多条提前返回路径（约束不满足、agent 禁用…），
+// 包装一层才能保证每条路径都被记到，且新增返回分支时不会漏审计。
 async function decide(prompt) {
   const R = loadRules();
   const trace = [];
@@ -330,40 +385,44 @@ async function decide(prompt) {
   trace.push(`是否写文件：${rule.needsWrite ? '是' : '否'}`);
 
   // ── 约束检查 ──
+  //
+  // 这些分支都是「决策已完成、但派不出去」。必须带上 layer / matchedBy，
+  // 否则审计日志会把命中了 B 层的任务记成 blocked，统计就失真了。
+  const fail = (error) => ({ ok: false, trace, rule, layer, matchedBy, error });
+
   const agent = R.agents[rule.target];
   if (!agent) {
-    return { ok: false, trace, rule, error: `规则 ${rule.id} 指向的 agent ${rule.target} 不在配置里` };
+    return fail(`规则 ${rule.id} 指向的 agent ${rule.target} 不在配置里`);
   }
   if (agent.enabled === false) {
-    return { ok: false, trace, rule, error: `${agent.label} 已禁用（agents.${rule.target}.enabled=false）` };
+    return fail(`${agent.label} 已禁用（agents.${rule.target}.enabled=false）`);
   }
 
   const ready = readiness[rule.target];
-  if (!ready) return { ok: false, trace, rule, error: `${agent.label}：AO 未识别` };
-  if (!ready.installed) return { ok: false, trace, rule, error: `${agent.label}：未安装` };
-  if (/needs auth/i.test(ready.auth)) return { ok: false, trace, rule, error: `${agent.label}：需要授权` };
+  if (!ready) return fail(`${agent.label}：AO 未识别`);
+  if (!ready.installed) return fail(`${agent.label}：未安装`);
+  if (/needs auth/i.test(ready.auth)) return fail(`${agent.label}：需要授权`);
 
   // Codex 不尊重 worktree → 只允许只读
   if (!agent.respectsWorktree && rule.needsWrite) {
-    return {
-      ok: false, trace, rule,
-      error: `${agent.label} 不尊重 worktree，但规则 ${rule.id} 要求写文件。\n` +
+    return fail(
+      `${agent.label} 不尊重 worktree，但规则 ${rule.id} 要求写文件。\n` +
         `  处理：\n` +
         `    1. 把任务改成只读措辞（"只分析不改"）\n` +
         `    2. 或手动 --harness deepseek-harness\n` +
         `    3. 或改规则文件把 ${rule.id} 的 target 换成 deepseek-harness`,
-    };
+    );
   }
 
   const load = activeByHarness[rule.target] || 0;
   const maxPerAgent = R.limits?.maxPerAgent ?? 2;
   if (load >= maxPerAgent) {
-    return { ok: false, trace, rule, error: `${agent.label} 已有 ${load} 个活跃会话（上限 ${maxPerAgent}）` };
+    return fail(`${agent.label} 已有 ${load} 个活跃会话（上限 ${maxPerAgent}）`);
   }
 
   const maxActive = R.limits?.maxActiveSessions ?? 3;
   if (active.length >= maxActive) {
-    return { ok: false, trace, rule, error: `活跃会话 ${active.length} 个已达上限 ${maxActive}，先清理再派活` };
+    return fail(`活跃会话 ${active.length} 个已达上限 ${maxActive}，先清理再派活`);
   }
 
   const model = agent.models?.[rule.model] || agent.models?.normal || null;
@@ -385,6 +444,30 @@ async function decide(prompt) {
     activeCount: active.length,
     maxActive,
   };
+}
+
+/**
+ * decide() + 一条 WAL 审计记录。
+ * ok 在这里固定为 null：plan 只是「会派给谁」，真正的成功与否由 run 路径记录。
+ * @param {string} prompt
+ * @param {object} [auditExtra] 额外覆盖的审计字段（run 路径用它写 ok/model）
+ */
+async function decideWithAudit(prompt, auditExtra = {}) {
+  const plan = await decide(prompt);
+
+  auditLog({
+    prompt,
+    layer: plan.layer ?? 'unknown',
+    ruleId: plan.rule?.id ?? null,
+    harness: plan.rule?.target ?? null,
+    model: plan.model ?? null,
+    needsWrite: plan.rule?.needsWrite ?? null,
+    ok: null,                       // plan 模式：未真正派活
+    reason: plan.rule?.reason ?? plan.error ?? null,
+    ...auditExtra,
+  });
+
+  return plan;
 }
 
 // ── 输出 ────────────────────────────────────────────────────
@@ -516,13 +599,29 @@ async function spawnWithFallback(prompt, plan, opts) {
 async function run(prompt, opts) {
   const plan = await decide(prompt);
 
+  // run 路径要记录真实结果：成功与否、实际用的模型。
+  // 先在这里落一条「决策 + 结果」，dry-run 与失败都各写各的 ok。
+  const auditBase = {
+    prompt,
+    layer: plan.layer ?? 'unknown',
+    ruleId: plan.rule?.id ?? null,
+    harness: plan.rule?.target ?? null,
+    needsWrite: plan.rule?.needsWrite ?? null,
+    reason: plan.rule?.reason ?? plan.error ?? null,
+  };
+  const audit = (extra) => auditLog({ ...auditBase, model: plan.model ?? null, ...extra });
+
   if (opts.json) {
     console.log(JSON.stringify(plan, null, 2));
+    audit({ ok: plan.ok ? null : false });
     return plan.ok ? 0 : 1;
   }
 
   printPlan(plan);
-  if (!plan.ok) return 1;
+  if (!plan.ok) {
+    audit({ ok: false });
+    return 1;
+  }
 
   if (opts.dryRun) {
     const name = opts.name || autoName(plan.rule);
@@ -537,6 +636,7 @@ async function run(prompt, opts) {
       console.log('  饱和降级链：');
       chain.forEach((c, i) => console.log(`    ${i + 2}. ${c.model} (${c.tier})`));
     }
+    audit({ ok: null });            // dry-run：未真正派活
     return 0;
   }
 
@@ -545,9 +645,11 @@ async function run(prompt, opts) {
   if (!r.ok) {
     console.log('');
     console.log(`  ❌ ${r.err}`);
+    audit({ ok: false, model: r.usedModel ?? plan.model ?? null });
     return 1;
   }
   console.log(`  ${r.out}`);
+  audit({ ok: true, model: r.usedModel ?? plan.model ?? null });
   return 0;
 }
 
@@ -605,6 +707,138 @@ function printRules(asJson) {
   console.log('');
 }
 
+// ── 审计统计 ────────────────────────────────────────────────
+
+/** 最近 N 天的日期串（YYYY-MM-DD），含今天。 */
+function recentDays(days) {
+  const out = [];
+  const now = new Date();
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+/**
+ * 读取最近 N 天的审计记录。
+ * 坏行（半截写入 / 手工改坏）跳过并计数，不中断统计。
+ * @returns {{records: Array, files: string[], badLines: number}}
+ */
+function readAudit(days) {
+  const records = [];
+  const files = [];
+  let badLines = 0;
+
+  for (const day of recentDays(days)) {
+    const p = path.join(CFG.auditDir, `decisions-${day}.jsonl`);
+    if (!fs.existsSync(p)) continue;
+    files.push(p);
+    let raw;
+    try { raw = fs.readFileSync(p, 'utf8'); } catch { continue; }
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try { records.push(JSON.parse(line)); } catch { badLines++; }
+    }
+  }
+  return { records, files, badLines };
+}
+
+/** 按 key 计数，返回 [key, count] 降序数组。 */
+function countBy(records, pick) {
+  const m = new Map();
+  for (const r of records) {
+    const k = pick(r);
+    m.set(k, (m.get(k) || 0) + 1);
+  }
+  return [...m.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function pct(n, total) {
+  return total ? `${((n / total) * 100).toFixed(1)}%` : '0.0%';
+}
+
+/** 打印审计统计。 */
+function printAudit(days, asJson) {
+  const { records, files, badLines } = readAudit(days);
+  const total = records.length;
+
+  // ok 三态：true 成功、false 失败、null 未派活（plan / dry-run）
+  const okCount = records.filter(r => r.ok === true).length;
+  const failCount = records.filter(r => r.ok === false).length;
+  const nullCount = records.filter(r => r.ok === null || r.ok === undefined).length;
+  const dispatched = okCount + failCount;
+
+  const byRule = countBy(records, r => r.ruleId ?? '(none)');
+  const byHarness = countBy(records, r => r.harness ?? '(none)');
+  const byLayer = countBy(records, r => r.layer ?? '(none)');
+  const byDay = countBy(records, r => (r.ts || '').slice(0, 10) || '(none)');
+
+  if (asJson) {
+    console.log(JSON.stringify({
+      days,
+      files,
+      total,
+      badLines,
+      ok: okCount,
+      failed: failCount,
+      notDispatched: nullCount,
+      failureRate: dispatched ? Number((failCount / dispatched).toFixed(4)) : null,
+      byRule: Object.fromEntries(byRule),
+      byHarness: Object.fromEntries(byHarness),
+      byLayer: Object.fromEntries(byLayer),
+      byDay: Object.fromEntries(byDay),
+    }, null, 2));
+    return;
+  }
+
+  console.log('═══════════════════════════════════════════════════');
+  console.log(`  AO 派活审计（最近 ${days} 天）`);
+  console.log('═══════════════════════════════════════════════════');
+  console.log(`  日志目录：${CFG.auditDir}`);
+  console.log(`  命中文件：${files.length} 个${files.length ? '' : '（还没有任何记录）'}`);
+  console.log(`  总记录数：${total}${badLines ? `（跳过坏行 ${badLines}）` : ''}`);
+  console.log('');
+
+  if (!total) {
+    console.log('  暂无数据。先跑几次 plan/run 再看。');
+    console.log('');
+    return;
+  }
+
+  console.log('【按规则】');
+  for (const [k, n] of byRule) {
+    console.log(`  ${String(n).padStart(5)}  ${pct(n, total).padStart(6)}  ${k}`);
+  }
+  console.log('');
+
+  console.log('【按 harness】');
+  for (const [k, n] of byHarness) {
+    console.log(`  ${String(n).padStart(5)}  ${pct(n, total).padStart(6)}  ${k}`);
+  }
+  console.log('');
+
+  console.log('【按决策层】');
+  for (const [k, n] of byLayer) {
+    console.log(`  ${String(n).padStart(5)}  ${pct(n, total).padStart(6)}  ${k}`);
+  }
+  console.log('');
+
+  console.log('【失败率】');
+  console.log(`  成功 ${okCount}  失败 ${failCount}  未派活 ${nullCount}（plan / dry-run）`);
+  console.log(`  失败率：${dispatched ? pct(failCount, dispatched) : '—（没有真正派过活）'}`);
+  console.log('');
+
+  console.log('【按天汇总】');
+  for (const [k, n] of byDay) {
+    const dayRecs = records.filter(r => (r.ts || '').slice(0, 10) === k);
+    const dOk = dayRecs.filter(r => r.ok === true).length;
+    const dFail = dayRecs.filter(r => r.ok === false).length;
+    console.log(`  ${k}  ${String(n).padStart(5)} 条  （成功 ${dOk} / 失败 ${dFail}）`);
+  }
+  console.log('');
+}
+
 // ── 入口 ────────────────────────────────────────────────────
 async function main() {
   const argv = process.argv.slice(2);
@@ -617,22 +851,34 @@ async function main() {
 
   const flagValues = new Set();
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--name') flagValues.add(i + 1);
+    if (argv[i] === '--name' || argv[i] === '--days') flagValues.add(i + 1);
   }
   const prompt = argv.slice(1)
     .filter((a, i) => !a.startsWith('--') && !flagValues.has(i + 1))
     .join(' ')
     .trim();
 
+  // audit 的天数：--days N，缺省 1 天；非法值回落 1
+  const days = (() => {
+    const i = argv.indexOf('--days');
+    if (i < 0) return 1;
+    const n = Number.parseInt(argv[i + 1], 10);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  })();
+
   switch (cmd) {
     case 'rules':
       printRules(opts.json);
       break;
 
+    case 'audit':
+      printAudit(days, opts.json);
+      break;
+
     case 'plan':
       if (!prompt) { console.error('用法: plan "任务描述"'); process.exit(1); }
       {
-        const plan = await decide(prompt);
+        const plan = await decideWithAudit(prompt);
         if (opts.json) console.log(JSON.stringify(plan, null, 2));
         else printPlan(plan);
         process.exit(plan.ok ? 0 : 1);
@@ -658,6 +904,9 @@ ao-dispatch — AO 任务智能分配（B 关键词 + D 语义兜底）
   node tools/ao-dispatch.js run --dry-run "..."    只看会跑什么命令
   node tools/ao-dispatch.js rules                  打印规则表
   node tools/ao-dispatch.js rules --json           规则原文
+  node tools/ao-dispatch.js audit                  审计统计（最近 1 天）
+  node tools/ao-dispatch.js audit --days 7         审计统计（最近 7 天）
+  node tools/ao-dispatch.js audit --days 7 --json  审计统计输出 JSON
 
 改规则:
   直接编辑 tools/ao-dispatch.rules.json，不用改代码。
@@ -665,6 +914,10 @@ ao-dispatch — AO 任务智能分配（B 关键词 + D 语义兜底）
 启用 D 层语义兜底:
   1. 改 rules.json: "semantic": { "enabled": true }
   2. 启动服务: python tools/semantic-router/server.py
+
+审计日志（WAL）:
+  每次路由决策写一行 JSON 到 ~/.ao/logs/dispatch/decisions-YYYY-MM-DD.jsonl。
+  只记提示词的 sha256 前 16 位与长度，不存原文。
 `);
       break;
 

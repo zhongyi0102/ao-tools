@@ -4,7 +4,7 @@
   "_docs": {
     "agent": "目标 agent。可用：deepseek-harness / codex（agy、mimo-code 已禁用）",
     "needsWrite": "是否要改文件。codex 不尊重 worktree，needsWrite=true 的任务会被拒绝派给 codex",
-    "model": "模型档位。cheap = x0.11，normal = x0.17（仅 deepseek-harness 有效）",
+    "model": "模型档位（仅 deepseek-harness 有效）。cheap = workbuddy/deepseek-v4.1-flash-sg (x0.11)；normal = buddy/deepseek-v4-pro；strong = buddy/deepseek-v4-flash (x0.17)",
     "priority": "数字越小越优先。同一任务命中多条规则时取 priority 最小的"
   },
   "agents": {
@@ -15,10 +15,17 @@
       "costTier": 1,
       "models": {
         "cheap": "[\"jethub\",\"workbuddy/deepseek-v4.1-flash-sg\"]",
-        "normal": "[\"jethub\",\"workbuddy/deepseek-v4.1-flash-sg\"]",
+        "normal": "[\"jethub\",\"buddy/deepseek-v4-pro\"]",
         "strong": "[\"jethub\",\"buddy/deepseek-v4-flash\"]"
       },
-      "notes": "主力。尊重 worktree，走腾讯积分。所有写文件任务都由它做。"
+      "notes": "主力。尊重 worktree，走腾讯积分。所有写文件任务都由它做。",
+      "modelNotes": [
+        "models 是按 harness 隔离的：这里的模型 id 只在 deepseek-harness + provider jethub 下有效。",
+        "codex 的模型（magpie-responses/agentrouter-plugin/gpt-5.6-sol 等）不能填进来——provider 不存在，必然失败，",
+        "而且 modelFallbackChain 会把它当降级链一环，导致每次 strong 档任务先失败一次再降级。",
+        "真正想用 gpt 的任务：把规则的 target 改成 codex，而不是把 gpt 模型塞进 DSH 的 models。",
+        "strong 用 jethub 下最强的 buddy/deepseek-v4-flash（x0.17），不是 gpt。"
+      ]
     },
     "codex": {
       "enabled": true,
@@ -94,23 +101,6 @@
       ]
     },
     {
-      "id": "review",
-      "label": "代码审查",
-      "priority": 15,
-      "target": "codex",
-      "needsWrite": false,
-      "model": "normal",
-      "reason": "审查 → Codex（强推理，只读安全）",
-      "keywords": [
-        "审查",
-        "review",
-        "评审",
-        "检查代码",
-        "评估质量",
-        "找问题"
-      ]
-    },
-    {
       "id": "hard",
       "label": "困难任务",
       "priority": 20,
@@ -139,6 +129,23 @@
         "最佳实践",
         "复杂",
         "难点"
+      ]
+    },
+    {
+      "id": "review",
+      "label": "代码审查",
+      "priority": 15,
+      "target": "codex",
+      "needsWrite": false,
+      "model": "normal",
+      "reason": "审查 → Codex（强推理，只读安全）",
+      "keywords": [
+        "审查",
+        "review",
+        "评审",
+        "检查代码",
+        "评估质量",
+        "找问题"
       ]
     },
     {
