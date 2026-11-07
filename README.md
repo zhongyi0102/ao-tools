@@ -46,6 +46,20 @@ Agent Orchestrator（AO）的本地运维工具。**和任何业务项目无关*
 
 ## 常用命令
 
+> **必须在业务项目目录下运行，不能在 `~\.ao\tools` 里运行。**
+> `tools` 自己也是一个 git 仓库，`ao-config.js` 第 3 层 `git rev-parse` 会把当前仓库误认成 `tools`，
+> 于是所有操作都打到工具链自己身上。
+
+```powershell
+# ✅ 正确：先进入业务项目
+cd E:\YourProject
+node ~\.ao\tools\ao-control.js status
+
+# ❌ 错误：在工具链目录里运行
+cd ~\.ao\tools
+node ao-control.js status        # 会把 ~/.ao/tools 当成业务项目
+```
+
 ```powershell
 # 健康报告
 node ~\.ao\tools\ao-control.js status
@@ -81,10 +95,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ~\.ao\tools\semantic-router\
 
 不启动也不影响分配 —— `ao-dispatch.js` 会自动降级到关键词层。
 
-## 首次部署（新电脑）
+## 前置条件
+
+| 依赖 | 用途 | 缺失后果 |
+|---|---|---|
+| AO 桌面端 | 提供 ao.exe，ao-control.js / ao-dispatch.js 全靠它 | 两个脚本完全不可用 |
+| Node.js >= 18 | 运行所有 .js 脚本 | 全部脚本不可用 |
+| uv | 建语义路由的 Python 环境 | 只能关键词匹配，无语义兜底 |
+| DSH 或 Codex | sync-mcp.js 的写入目标 | 无对象可写 |
+
+`ao.exe` 默认在 `%LOCALAPPDATA%\Programs\agent-orchestrator\resources\daemon\ao.exe`。
+装在别处时用 `AO_BIN` 环境变量指向实际路径，例如：
 
 ```powershell
-git clone <本仓库> ~\.ao\tools
+$env:AO_BIN = 'D:\Apps\agent-orchestrator\resources\daemon\ao.exe'
+```
+
+（解析逻辑见 `ao-config.js` 的 `resolveAoBin()`：`AO_BIN` 优先，且要求文件真实存在，否则回退默认位置。）
+
+## 首次部署（新电脑）
+
+仓库地址待补。当前可手动把整个 `~\.ao\tools` 目录复制到新机器的 `%USERPROFILE%\.ao\tools`。
+
+```powershell
+# 仓库地址待补；当前做法是把整个目录拷到 ~\.ao\tools
+# 然后：
 cd ~\.ao\tools
 
 # 1) MCP server 的 Node 依赖（不装则 ao-context MCP 起不来）
