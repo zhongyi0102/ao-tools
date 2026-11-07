@@ -1,6 +1,8 @@
 ﻿# AO 语义路由服务 · 开机自启（用户级，无需管理员）
 #
-# 用 Windows 启动文件夹放一个 .vbs，登录时静默启动服务（无黑窗）。
+# 用 Windows 启动文件夹放一个 .lnk 快捷方式，登录时用 pythonw.exe 静默启动服务（无黑窗）。
+# 不用 .vbs：VBScript 在 Win11 26200 已进入弃用流程（事件 VBScriptDeprecationAlert 4096），
+# 而且 pythonw 本身就没有控制台窗口，不需要 wscript 中转。
 #
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\semantic-router\install-autostart.ps1
@@ -15,19 +17,75 @@ param(
 $ErrorActionPreference = 'Stop'
 $ServerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerPy = Join-Path $ServerDir 'server.py'
+$LauncherPy = Join-Path $ServerDir 'run_hidden.pyw'
+$VenvDir = Join-Path $ServerDir '.venv'
+$PythonwExe = Join-Path $VenvDir 'Scripts\pythonw.exe'
 $StartupDir = [Environment]::GetFolderPath('Startup')
-$VbsPath = Join-Path $StartupDir 'AO-SemanticRouter.vbs'
+$LnkPath = Join-Path $StartupDir 'AO-SemanticRouter.lnk'
+# 旧版（wscript + .vbs）残留，仅用于清理
+$LegacyVbsPath = Join-Path $StartupDir 'AO-SemanticRouter.vbs'
 $LogPath = Join-Path $env:TEMP 'ao-semantic-router.log'
+
+# ---------- 工具函数 ----------
+# 停掉占用 8765 的路由服务进程。
+# python.exe（uv run）和 pythonw.exe（.lnk 直启）都要认，否则换了启动方式就停不掉旧实例。
+function Stop-RouterService {
+    $conn = Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue
+    if (-not $conn) { return $false }
+    $stopped = $false
+    $procIds = $conn | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($procId in $procIds) {
+        $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if ($p -and @('python', 'pythonw') -contains $p.ProcessName) {
+            Stop-Process -Id $p.Id -Force
+            Write-Host "已停止旧服务 PID $($p.Id)（$($p.ProcessName)）" -ForegroundColor Green
+            $stopped = $true
+        }
+    }
+    return $stopped
+}
+
+# uv 缺失时的可操作提示
+function Write-UvMissingHelp {
+    Write-Host "找不到 uv。" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "uv 是什么：" -ForegroundColor Cyan
+    Write-Host "  它负责建 semantic-router 的 Python 环境（FastAPI + bge-small-zh 向量模型），"
+    Write-Host "  语义路由服务就靠这个环境跑起来。"
+    Write-Host ""
+    Write-Host "不装会怎样：" -ForegroundColor Cyan
+    Write-Host "  ao-dispatch.js 只能走关键词粗筛，语义兜底不可用；"
+    Write-Host "  但工具链其余部分（ao-control.js / ao-dispatch.js / sync-mcp.js）照常可用。"
+    Write-Host ""
+    Write-Host "怎么装（任选一条）：" -ForegroundColor Cyan
+    Write-Host "  winget install astral-sh.uv"
+    Write-Host "  irm https://astral.sh/uv/install.ps1 | iex"
+    Write-Host ""
+    Write-Host "已经手动建好 .venv 的话不用再装 uv，直接复用现有环境即可。" -ForegroundColor Cyan
+    Write-Host "  期望路径: $VenvDir"
+    Write-Host ""
+}
 
 # ---------- Status ----------
 if ($Status) {
-    if (Test-Path $VbsPath) {
-        Write-Host "自启项已安装: $VbsPath" -ForegroundColor Green
-        Write-Host "--- 内容 ---"
-        Get-Content $VbsPath
-        Write-Host "------------"
+    if (Test-Path $LnkPath) {
+        Write-Host "自启项已安装: $LnkPath" -ForegroundColor Green
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($LnkPath)
+        Write-Host "--- 快捷方式 ---"
+        Write-Host "目标    : $($sc.TargetPath)"
+        Write-Host "参数    : $($sc.Arguments)"
+        Write-Host "工作目录: $($sc.WorkingDirectory)"
+        if (-not (Test-Path $sc.TargetPath)) {
+            Write-Host "WARN 目标文件不存在（venv 被删了？重跑一次本脚本可修复）" -ForegroundColor Yellow
+        }
+        Write-Host "----------------"
     } else {
-        Write-Host "自启项未安装（$VbsPath 不存在）" -ForegroundColor Yellow
+        Write-Host "自启项未安装（$LnkPath 不存在）" -ForegroundColor Yellow
+    }
+
+    if (Test-Path $LegacyVbsPath) {
+        Write-Host "WARN 发现旧版 .vbs 残留（VBScript 已弃用），-Uninstall 会一并清理: $LegacyVbsPath" -ForegroundColor Yellow
     }
 
     Write-Host ""
@@ -42,23 +100,23 @@ if ($Status) {
 
 # ---------- Uninstall ----------
 if ($Uninstall) {
-    if (Test-Path $VbsPath) {
-        Remove-Item $VbsPath -Force
-        Write-Host "已删除自启项: $VbsPath" -ForegroundColor Green
-    } else {
+    $removed = $false
+    if (Test-Path $LnkPath) {
+        Remove-Item $LnkPath -Force
+        Write-Host "已删除自启项: $LnkPath" -ForegroundColor Green
+        $removed = $true
+    }
+    # 兼容旧版安装
+    if (Test-Path $LegacyVbsPath) {
+        Remove-Item $LegacyVbsPath -Force
+        Write-Host "已删除旧版自启项: $LegacyVbsPath" -ForegroundColor Green
+        $removed = $true
+    }
+    if (-not $removed) {
         Write-Host "自启项不存在" -ForegroundColor Yellow
     }
 
-    $conn = Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue
-    if ($conn) {
-        $conn | ForEach-Object {
-            $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
-            if ($p -and $p.ProcessName -eq 'python') {
-                Stop-Process -Id $p.Id -Force
-                Write-Host "已停止服务 PID $($p.Id)" -ForegroundColor Green
-            }
-        }
-    }
+    $null = Stop-RouterService
     exit 0
 }
 
@@ -69,20 +127,27 @@ Write-Host ""
 if (-not (Test-Path $ServerPy)) {
     throw "找不到 server.py: $ServerPy"
 }
+if (-not (Test-Path $LauncherPy)) {
+    throw "找不到 run_hidden.pyw: $LauncherPy（自启项需要它做无窗口启动）"
+}
 
 $uv = Get-Command uv -ErrorAction SilentlyContinue
-if (-not $uv) {
-    throw "找不到 uv。请先安装：https://docs.astral.sh/uv/"
-}
-Write-Host "uv       : $($uv.Source)"
+$venvExists = Test-Path $VenvDir
+
+$uvDisplay = if ($uv) { $uv.Source } elseif ($venvExists) { '未安装（复用已有 venv）' } else { '未安装' }
+Write-Host "uv       : $uvDisplay"
 Write-Host "服务目录 : $ServerDir"
+Write-Host "Python   : $PythonwExe"
 Write-Host "启动目录 : $StartupDir"
 Write-Host "日志     : $LogPath"
 Write-Host ""
 
-# 依赖检查
-$venvPath = Join-Path $ServerDir '.venv'
-if (-not (Test-Path $venvPath)) {
+# 依赖检查：venv 已在就跳过 uv sync，只有「venv 不在 + uv 不在」才是真阻塞
+if (-not $venvExists) {
+    if (-not $uv) {
+        Write-UvMissingHelp
+        throw "缺少 Python 环境：$VenvDir 不存在，且找不到 uv，无法自动创建。请按上面的提示二选一后重试。"
+    }
     Write-Host "首次安装需要下载依赖（含 torch，约 2GB）。" -ForegroundColor Yellow
     Write-Host "按 Enter 继续，Ctrl+C 取消"
     Read-Host | Out-Null
@@ -93,39 +158,42 @@ if (-not (Test-Path $venvPath)) {
     } finally {
         Pop-Location
     }
+    if (-not (Test-Path $VenvDir)) {
+        throw "uv sync 结束但 $VenvDir 仍不存在，请手动检查。"
+    }
+} elseif (-not $uv) {
+    Write-Host "注意：没装 uv，但 $VenvDir 已存在，直接复用它，跳过 uv sync。" -ForegroundColor Yellow
+    Write-Host ""
 }
 
-# 生成 VBS（静默启动，无控制台窗口）
-# 关键：cmd /c 后面整个命令要再包一层双引号，且内层 uv.exe 路径也要引号。
-# 实测写法：cmd /c ""C:\path\uv.exe" run server.py >> "log" 2>&1"
-$uvPath = $uv.Source
-$vbs = @"
-' AO 语义路由服务 · 开机自启（由 install-autostart.ps1 生成）
-' 静默启动 tools/semantic-router/server.py，日志追加到 %TEMP%\ao-semantic-router.log
-Dim sh, logPath
-Set sh = CreateObject("WScript.Shell")
-logPath = sh.ExpandEnvironmentStrings("%TEMP%") & "\ao-semantic-router.log"
-sh.CurrentDirectory = "$ServerDir"
-sh.Run "cmd /c """"$uvPath"" run server.py >> """ & logPath & """ 2>&1""", 0, False
-"@
+if (-not (Test-Path $PythonwExe)) {
+    Write-UvMissingHelp
+    throw "找不到 pythonw.exe: $PythonwExe。请重建 venv：cd `"$ServerDir`" ; uv venv .venv --python 3.13 ; uv pip install -r requirements.txt"
+}
 
-$vbsEnc = New-Object System.Text.UnicodeEncoding($false, $true)
-[System.IO.File]::WriteAllText($VbsPath, $vbs, $vbsEnc)
-Write-Host "OK 已写入自启项: $VbsPath" -ForegroundColor Green
+# 生成 .lnk 快捷方式（pythonw 无控制台窗口，不需要 wscript）
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut($LnkPath)
+$sc.TargetPath = $PythonwExe
+$sc.Arguments = "`"$LauncherPy`""
+$sc.WorkingDirectory = $ServerDir
+$sc.WindowStyle = 7
+$sc.Description = 'AO 语义路由服务（pythonw 无窗口）'
+$sc.IconLocation = "$PythonwExe,0"
+$sc.Save()
+Write-Host "OK 已写入自启项: $LnkPath" -ForegroundColor Green
+if (Test-Path $LegacyVbsPath) {
+    Write-Host "提示：发现旧版 $LegacyVbsPath（VBScript 已弃用），可直接删除；跑 -Uninstall 会一并清理它。" -ForegroundColor Yellow
+}
 
 # 立即启动一次验证（先停旧的）
-$conn = Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue
-if ($conn) {
-    $conn | ForEach-Object {
-        $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
-        if ($p -and $p.ProcessName -eq 'python') { Stop-Process -Id $p.Id -Force }
-    }
+if (Stop-RouterService) {
     Start-Sleep -Seconds 2
 }
 
 Write-Host ""
 Write-Host "立即启动并等待就绪..."
-& wscript.exe $VbsPath
+Start-Process -FilePath $PythonwExe -ArgumentList "`"$LauncherPy`"" -WorkingDirectory $ServerDir | Out-Null
 
 $deadline = (Get-Date).AddSeconds(90)
 $ready = $false
