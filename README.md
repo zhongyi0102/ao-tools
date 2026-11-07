@@ -115,12 +115,26 @@ $env:AO_BIN = 'D:\Apps\agent-orchestrator\resources\daemon\ao.exe'
 
 ## 首次部署（新电脑）
 
-仓库地址待补。当前可手动把整个 `~\.ao\tools` 目录复制到新机器的 `%USERPROFILE%\.ao\tools`。
+仓库地址：**https://github.com/zhongyi0102/ao-tools**（**private**）
 
 ```powershell
-# 仓库地址待补；当前做法是把整个目录拷到 ~\.ao\tools
-# 然后：
-cd ~\.ao\tools
+git clone https://github.com/zhongyi0102/ao-tools.git $env:USERPROFILE\.ao\tools
+cd $env:USERPROFILE\.ao\tools
+```
+
+> **仓库是 private**：别人 `clone` 前必须让 `zhongyi0102` 把自己的 GitHub 账号加进仓库协作者，
+> 或者用有 `repo` scope 的 PAT 克隆：
+>
+> ```powershell
+> git clone https://<你的用户名>:<PAT>@github.com/zhongyi0102/ao-tools.git $env:USERPROFILE\.ao\tools
+> ```
+>
+> 没有访问权限时 `git clone` 会报 `Repository not found` —— 这是权限问题，不是地址写错。
+
+克隆下来只是拿到源码，还差两个可选依赖：
+
+```powershell
+cd $env:USERPROFILE\.ao\tools
 
 # 1) MCP server 的 Node 依赖（不装则 ao-context MCP 起不来）
 cd context-mcp
