@@ -1,0 +1,17 @@
+# AO 工具链的本地产物（不进版本库）
+
+# Python 虚拟环境（843 MB，机器相关，重建即可）
+semantic-router/.venv/
+
+# Python 缓存
+semantic-router/__pycache__/
+semantic-router/*.pyc
+
+# Node 依赖（由 package.json 声明）
+context-mcp/node_modules/
+
+# sync-mcp 写入前生成的备份
+*.bak-syncmcp
+
+# 运行日志
+*.log
