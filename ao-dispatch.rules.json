@@ -18,7 +18,9 @@
         "normal": "[\"jethub\",\"workbuddy/deepseek-v4.1-flash-sg\"]",
         "strong": "[\"jethub\",\"buddy/deepseek-v4-flash\"]"
       },
-      "notes": "主力。尊重 worktree，走腾讯积分。所有写文件任务都由它做。"
+      "notes": "主力。尊重 worktree，走腾讯积分。所有写文件任务都由它做。",
+      "steerWhileWorking": false,
+      "steerNote": "ACP sessionCapabilities 只有 close/list/resume，无 steer。干活时消息只能排队。"
     },
     "codex": {
       "enabled": true,
@@ -28,7 +30,9 @@
       "models": {
         "normal": "[\"magpie-responses\",\"agentrouter-plugin/gpt-5.6-sol\"]"
       },
-      "notes": "只用于只读的困难任务（强推理）。写文件任务一律排除。"
+      "notes": "只用于只读的困难任务（强推理）。写文件任务一律排除。",
+      "steerWhileWorking": true,
+      "steerNote": "Codex app-server 支持 steering，可在 turn 中途插话。"
     },
     "agy": {
       "enabled": false,
@@ -36,7 +40,9 @@
       "respectsWorktree": true,
       "costTier": 2,
       "models": {},
-      "notes": "暂不启用。"
+      "notes": "暂不启用。",
+      "steerWhileWorking": null,
+      "steerNote": "未验证。"
     },
     "mimo-code": {
       "enabled": false,
@@ -44,7 +50,9 @@
       "respectsWorktree": true,
       "costTier": 2,
       "models": {},
-      "notes": "暂不启用。"
+      "notes": "暂不启用。",
+      "steerWhileWorking": null,
+      "steerNote": "未验证。"
     }
   },
   "limits": {

@@ -582,9 +582,16 @@ function printRules(asJson) {
   for (const [id, a] of Object.entries(R.agents)) {
     const st = a.enabled === false ? '⛔ 禁用' : '✅ 启用';
     const wt = a.respectsWorktree ? '✅' : '❌';
-    console.log(`  ${st}  ${a.label.padEnd(20)} worktree=${wt}  cost=${a.costTier}`);
-    if (a.enabled !== false) console.log(`        ${a.notes}`);
+    const steer = a.steerWhileWorking === true ? '✅' : (a.steerWhileWorking === false ? '❌' : '?');
+    console.log(`  ${st}  ${a.label.padEnd(20)} worktree=${wt}  steer=${steer}  cost=${a.costTier}`);
+    if (a.enabled !== false) {
+      console.log(`        ${a.notes}`);
+      if (a.steerNote) console.log(`        steer: ${a.steerNote}`);
+    }
   }
+  console.log('');
+  console.log('  说明：steer = 干活中途能否插话。');
+  console.log('        ❌ 时消息会排队，turn 结束后自动处理；想立刻生效先在界面点 ⏹。');
   console.log('');
 
   console.log('【限制】');
@@ -603,6 +610,108 @@ function printRules(asJson) {
     console.log('  并启动: python tools/semantic-router/server.py');
   }
   console.log('');
+}
+
+// ── chat：向已有会话发消息（自动判断 steer 还是排队）──────
+async function chat(sessionId, message, opts) {
+  const R = loadRules();
+
+  // 1. 查会话状态
+  const r = ao(['session', 'get', sessionId]);
+  if (!r.ok) {
+    console.error(`❌ 找不到会话 ${sessionId}`);
+    console.error(`   列出会话：ao session ls`);
+    return 1;
+  }
+
+  const info = {};
+  for (const line of r.out.split('\n')) {
+    const m = line.match(/^(\w+):\s*(.*)$/);
+    if (m) info[m[1]] = m[2].trim();
+  }
+
+  const harness = info.harness || '?';
+  const status = info.status || '?';
+  const activity = info.activity || '?';
+  const isWorking = ['working', 'active'].includes(activity) || ['working', 'active'].includes(status);
+  const agent = R.agents[harness];
+
+  console.log('═══════════════════════════════════════════════════');
+  console.log('  AO 会话发消息');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('');
+  console.log(`  会话      : ${sessionId}`);
+  console.log(`  harness   : ${harness}`);
+  console.log(`  状态      : ${status} / ${activity}`);
+  console.log(`  消息      : ${message.slice(0, 60)}${message.length > 60 ? '…' : ''}`);
+  console.log('');
+
+  if (!agent) {
+    console.error(`  ❌ harness "${harness}" 不在规则配置里`);
+    return 1;
+  }
+
+  // 2. 判断策略
+  const canSteer = agent.steerWhileWorking === true;
+  let strategy;
+  let useSteer = false;
+
+  if (!isWorking) {
+    strategy = 'idle → 直接开新一轮';
+    useSteer = false;
+  } else if (canSteer) {
+    strategy = `${agent.label} 支持 steer → 在步骤边界插话（不打断当前 turn）`;
+    useSteer = true;
+  } else {
+    strategy = `${agent.label} 不支持 steer → 消息排队，turn 结束后自动处理`;
+    useSteer = false;
+  }
+
+  console.log(`  策略      : ${strategy}`);
+  if (agent.steerNote) console.log(`  依据      : ${agent.steerNote}`);
+  console.log('');
+
+  if (opts.dryRun) {
+    const args = ['send', '--session', sessionId, '--message', message];
+    if (useSteer) args.push('--steer');
+    console.log('  （--dry-run，未发送）');
+    console.log('  实际会跑：');
+    console.log(`    ao ${args.map(a => a.includes(' ') ? JSON.stringify(a) : a).join(' ')}`);
+    return 0;
+  }
+
+  // 3. 发送
+  const args = ['send', '--session', sessionId, '--message', message];
+  if (useSteer) args.push('--steer');
+
+  const res = ao(args);
+  if (!res.ok) {
+    // steer 被拒（CHAT_STEER_UNSUPPORTED）→ 降级为普通 send
+    if (/CHAT_STEER_UNSUPPORTED|STEER_UNSUPPORTED/i.test(res.err)) {
+      console.log(`  ⚠️  steer 被拒（agent 不支持），降级为普通发送…`);
+      const fallback = ao(['send', '--session', sessionId, '--message', message]);
+      if (!fallback.ok) {
+        console.log(`  ❌ ${fallback.err.slice(0, 300)}`);
+        return 1;
+      }
+      console.log(`  ✅ 已排队（${fallback.out}）`);
+      console.log('');
+      console.log('  提示：这条消息会在当前 turn 结束后处理。');
+      console.log('       想立刻生效，先在界面点 ⏹ 停掉当前 turn。');
+      return 0;
+    }
+
+    console.log(`  ❌ ${res.err.slice(0, 400)}`);
+    return 1;
+  }
+
+  console.log(`  ✅ ${res.out}`);
+  console.log('');
+  if (isWorking && !useSteer) {
+    console.log('  提示：消息已排队，当前 turn 结束后处理。');
+    console.log('       想立刻生效，先在界面点 ⏹ 停掉当前 turn。');
+  }
+  return 0;
 }
 
 // ── 入口 ────────────────────────────────────────────────────
@@ -644,6 +753,20 @@ async function main() {
       process.exit(await run(prompt, opts));
       break;
 
+    case 'chat':
+      {
+        const rest = argv.slice(1).filter(a => !a.startsWith('--'));
+        const sessionId = rest[0];
+        const msg = rest.slice(1).join(' ').trim();
+        if (!sessionId || !msg) {
+          console.error('用法: chat <session-id> "消息内容"');
+          console.error('例:   chat cloverstart-23 "只用 app\\CloverStart.exe"');
+          process.exit(1);
+        }
+        process.exit(await chat(sessionId, msg, opts));
+      }
+      break;
+
     case undefined:
     case 'help':
     case '--help':
@@ -652,19 +775,26 @@ async function main() {
 ao-dispatch — AO 任务智能分配（B 关键词 + D 语义兜底）
 
 用法:
-  node tools/ao-dispatch.js plan "任务描述"        看决策
-  node tools/ao-dispatch.js plan --json "..."      决策输出 JSON
-  node tools/ao-dispatch.js run "任务描述"         决策 + 派活
-  node tools/ao-dispatch.js run --dry-run "..."    只看会跑什么命令
-  node tools/ao-dispatch.js rules                  打印规则表
-  node tools/ao-dispatch.js rules --json           规则原文
+  node ao-dispatch.js plan "任务描述"        看决策
+  node ao-dispatch.js plan --json "..."      决策输出 JSON
+  node ao-dispatch.js run "任务描述"         决策 + 派活
+  node ao-dispatch.js run --dry-run "..."    只看会跑什么命令
+  node ao-dispatch.js chat <会话id> "消息"   向已有会话发消息（自动判断 steer/排队）
+  node ao-dispatch.js rules                  打印规则表（含 steer 能力）
+  node ao-dispatch.js rules --json           规则原文
+
+chat 的自动判断逻辑:
+  会话 idle                         → 直接开新一轮
+  会话 working + agent 支持 steer   → 步骤边界插话，不打断
+  会话 working + agent 不支持 steer → 排队，turn 结束后处理
+                                      （想立刻生效，先在界面点 ⏹）
 
 改规则:
-  直接编辑 tools/ao-dispatch.rules.json，不用改代码。
+  直接编辑 ao-dispatch.rules.json，不用改代码。
 
 启用 D 层语义兜底:
   1. 改 rules.json: "semantic": { "enabled": true }
-  2. 启动服务: python tools/semantic-router/server.py
+  2. 启动服务: cd semantic-router && uv run server.py
 `);
       break;
 
