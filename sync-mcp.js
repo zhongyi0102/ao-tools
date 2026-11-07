@@ -69,6 +69,27 @@ ${Object.entries(SERVER_ENV).map(([k, v]) => `      ${k}: ${JSON.stringify(v)}`)
 `;
 }
 
+/**
+ * 判断配置文件里是否已经写入了正确的路径。
+ *
+ * 坑：写进 YAML/TOML 的是 JSON.stringify 后的字符串，
+ * 路径里的 \ 会变成 \\。直接拿原始路径去 includes 永远匹配不上，
+ * 会导致「每次都判定为变更、每次都重写」。
+ * 所以两种形式都要比：原始形式 + JSON 转义形式。
+ */
+function hasPath(content, p) {
+  if (!p) return false;
+  if (content.includes(p)) return true;
+  // JSON.stringify 会把 \ 转成 \\，去掉外层引号再比
+  const escaped = JSON.stringify(p).slice(1, -1);
+  return content.includes(escaped);
+}
+
+/** 已有配置且路径正确 → 无需改动 */
+function configIsCurrent(content) {
+  return hasPath(content, SERVER_ARGS[0]) && hasPath(content, SERVER_ENV.AO_CONTEXT_DIR);
+}
+
 function writeDshYaml(filePath, dryRun) {
   let content = '';
   if (fs.existsSync(filePath)) {
@@ -77,9 +98,7 @@ function writeDshYaml(filePath, dryRun) {
       // 已有配置：检查路径是否仍然正确。
       // 工具搬家（如从 <repo>\tools 移到 ~\.ao\tools）后旧路径会失效，
       // 这时不能简单跳过，否则 MCP 会指向一个不存在的 server.js。
-      const wantArg = SERVER_ARGS[0];
-      const wantDir = SERVER_ENV.AO_CONTEXT_DIR;
-      if (content.includes(wantArg) && content.includes(wantDir)) {
+      if (configIsCurrent(content)) {
         return { status: 'skip', reason: '已有 ao-context 配置且路径正确' };
       }
       // 路径变了 → 删掉旧块，重新插入
@@ -133,9 +152,7 @@ function writeCodexToml(filePath, dryRun) {
     content = fs.readFileSync(filePath, 'utf8');
     if (content.includes(`[mcp_servers.${SERVER_NAME}]`)) {
       // 同 DSH：路径正确才跳过，否则整段替换
-      const wantArg = SERVER_ARGS[0];
-      const wantDir = SERVER_ENV.AO_CONTEXT_DIR;
-      if (content.includes(wantArg) && content.includes(wantDir)) {
+      if (configIsCurrent(content)) {
         return { status: 'skip', reason: '已有 ao-context 配置且路径正确' };
       }
       // 删掉旧的 [mcp_servers.ao-context] 段（含其 env 子段），到下一个 [ 开头的段或文件末尾
