@@ -110,7 +110,7 @@ function loadRules() {
           notes: '默认',
         },
       },
-      limits: { maxActiveSessions: 3, maxPerAgent: 2 },
+      limits: { maxActiveSessions: 10, maxPerAgent: 5, maxOrchestrators: 3, keepLastTerminated: 3 },
       rules: [],
       default: { id: 'default', label: '默认', target: 'deepseek-harness', needsWrite: true, model: 'normal', reason: '规则文件缺失' },
       semantic: { enabled: false },
@@ -415,12 +415,12 @@ async function decide(prompt) {
   }
 
   const load = activeByHarness[rule.target] || 0;
-  const maxPerAgent = R.limits?.maxPerAgent ?? 2;
+  const maxPerAgent = R.limits?.maxPerAgent ?? 5;
   if (load >= maxPerAgent) {
     return fail(`${agent.label} 已有 ${load} 个活跃会话（上限 ${maxPerAgent}）`);
   }
 
-  const maxActive = R.limits?.maxActiveSessions ?? 3;
+  const maxActive = R.limits?.maxActiveSessions ?? 10;
   if (active.length >= maxActive) {
     return fail(`活跃会话 ${active.length} 个已达上限 ${maxActive}，先清理再派活`);
   }
