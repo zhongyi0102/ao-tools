@@ -3,7 +3,7 @@
  * ao-config — AO 工具链的统一配置解析（方案 C：四层兜底）
  *
  * 解决的问题：
- *   以前 repo / project 写死在每个脚本里（'E:\\CloverStart'、'cloverstart'），
+ *   以前 repo / project 写死在每个脚本里（'D:\\YourProject'、'your-project'），
  *   换项目或换电脑就全废。这里收敛成一处，所有脚本都从这里取。
  *
  * 解析优先级（前面的赢）：
@@ -18,10 +18,10 @@
  *
  * 配置文件格式（可选，不建也能用）：
  *   {
- *     "defaultProject": "cloverstart",
+ *     "defaultProject": "your-project",
  *     "projects": {
- *       "cloverstart": { "repo": "E:\\CloverStart" },
- *       "other":       { "repo": "D:\\Other" }
+ *       "your-project": { "repo": "D:\\YourProject" },
+ *       "other":        { "repo": "D:\\Other" }
  *     }
  *   }
  */

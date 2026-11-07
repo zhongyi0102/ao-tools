@@ -2,6 +2,10 @@
 
 Agent Orchestrator（AO）的本地运维工具。**和任何业务项目无关**，独立于 CloverStart 等仓库。
 
+> 这是个人自用的 agent 工作流工具链，公开出来仅供**参考**。
+> 里面的路径、agent 名称、模型档位都按我本机的环境写死，**不保证对他人环境的适配**，
+> 拿去用之前请按自己的环境改。
+
 ## 这套工具解决什么
 
 多 agent 并行干活时会出现工作区与会话污染：会话堆积、孤儿 worktree、分支不清理、
@@ -115,21 +119,12 @@ $env:AO_BIN = 'D:\Apps\agent-orchestrator\resources\daemon\ao.exe'
 
 ## 首次部署（新电脑）
 
-仓库地址：**https://github.com/zhongyi0102/ao-tools**（**private**）
+仓库地址：**https://github.com/zhongyi0102/ao-tools**（**public**，直接 clone 即可）
 
 ```powershell
 git clone https://github.com/zhongyi0102/ao-tools.git $env:USERPROFILE\.ao\tools
 cd $env:USERPROFILE\.ao\tools
 ```
-
-> **仓库是 private**：别人 `clone` 前必须让 `zhongyi0102` 把自己的 GitHub 账号加进仓库协作者，
-> 或者用有 `repo` scope 的 PAT 克隆：
->
-> ```powershell
-> git clone https://<你的用户名>:<PAT>@github.com/zhongyi0102/ao-tools.git $env:USERPROFILE\.ao\tools
-> ```
->
-> 没有访问权限时 `git clone` 会报 `Repository not found` —— 这是权限问题，不是地址写错。
 
 克隆下来只是拿到源码，还差两个可选依赖：
 
