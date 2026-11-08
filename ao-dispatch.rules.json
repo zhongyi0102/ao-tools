@@ -46,26 +46,6 @@
       "notes": "强推理 + 可写文件。实测遵守 worktree（thread/start 的 cwd）。成本高，用于困难任务和 DSH 卡住的场景。",
       "steerWhileWorking": true,
       "steerNote": "Codex app-server 支持 steering，可在 turn 中途插话。"
-    },
-    "agy": {
-      "enabled": false,
-      "label": "Agy (Antigravity)",
-      "respectsWorktree": true,
-      "costTier": 2,
-      "models": {},
-      "notes": "暂不启用。",
-      "steerWhileWorking": null,
-      "steerNote": "未验证。"
-    },
-    "mimo-code": {
-      "enabled": false,
-      "label": "MiMo Code",
-      "respectsWorktree": true,
-      "costTier": 2,
-      "models": {},
-      "notes": "暂不启用。",
-      "steerWhileWorking": null,
-      "steerNote": "未验证。"
     }
   },
   "limits": {
